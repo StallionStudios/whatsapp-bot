@@ -1,75 +1,81 @@
 import express from "express";
-import pkg from "whatsapp-web.js";
-import qrcode from "qrcode-terminal";
+import { setupClientEvents, initializeClient, destroyClient, clientState } from "./services/whatsapp.js";
+import { errorResponse } from "./utils/helpers.js";
 
-const { Client, LocalAuth } = pkg;
+// Import routes
+import healthRoutes from "./routes/health.js";
+import qrRoutes from "./routes/qr.js";
+import messagingRoutes from "./routes/messaging.js";
+import webhookRoutes from "./routes/webhook.js";
 
+// Configuration
+const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
+const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
+
+// Initialize Express app
 const app = express();
-const port = 3000;
+app.use(express.json({ limit: "10mb" }));
 
-app.use(express.json());
+// Setup WhatsApp client events
+setupClientEvents(WEBHOOK_URL);
 
-const client = new Client({
-  authStrategy: new LocalAuth(),
-  puppeteer: {
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-    ],
-  },
+// Initialize WhatsApp client
+initializeClient();
+
+// Register routes
+app.use("/", healthRoutes);
+app.use("/", qrRoutes);
+app.use("/", messagingRoutes);
+app.use("/", webhookRoutes);
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
+  errorResponse(res, 500, "Internal server error", {
+    error: process.env.NODE_ENV === "development" ? err.message : undefined,
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  errorResponse(res, 404, "Endpoint not found", {
+    path: req.path,
+    method: req.method,
+  });
 });
 
 /**
- * WhatsApp Events
+ * Graceful Shutdown
  */
-client.on("qr", (qr) => {
-  console.log("📲 Scan this QR:");
-  qrcode.generate(qr, { small: true });
+const server = app.listen(PORT, HOST, () => {
+  console.log(`✅ Server running on http://${HOST}:${PORT}`);
+  console.log(`📊 Health check: http://${HOST}:${PORT}/`);
+  console.log(`📱 Status: http://${HOST}:${PORT}/status`);
 });
 
-client.once("ready", () => {
-  console.log("✅ WhatsApp client ready!");
-});
+// Handle graceful shutdown
+const shutdown = async (signal) => {
+  console.log(`\n${signal} received. Shutting down gracefully...`);
+  
+  server.close(async () => {
+    console.log("HTTP server closed");
+    
+    try {
+      await destroyClient();
+      process.exit(0);
+    } catch (err) {
+      console.error("Error during shutdown:", err);
+      process.exit(1);
+    }
+  });
 
-client.on("message_create", (message) => {
-  console.log("📩 Received:", message.body);
-});
+  // Force shutdown after 10 seconds
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 10000);
+};
 
-/**
- * Start WhatsApp
- */
-client.initialize();
-
-/**
- * Routes
- */
-app.get("/", (req, res) => {
-  res.send("Hello from Express + WhatsApp 🚀");
-});
-
-app.post("/send", async (req, res) => {
-  const { number, text } = req.body;
-
-  if (!number || !text) {
-    return res.status(400).json({ ok: false, error: "Missing 'number' or 'text' in request body" });
-  }
-  let formattedNumber = number.replace("+52", "521");
-  if(number.length === 10) {
-    formattedNumber = `521${number}`;
-  }
-
-  try {
-    await client.sendMessage(`${formattedNumber}@c.us`, text);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.json({ ok: false, error: err.message });
-  }
-});
-
-/**
- * Start server
- */
-app.listen(port, "0.0.0.0", () => {
-  console.log(`✅ Server running http://0.0.0.0:${port}`);
-});
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
