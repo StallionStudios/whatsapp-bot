@@ -40,6 +40,9 @@ services:
     build: ./whatsapp-bot
     container_name: whatsapp-bot
     restart: always
+    volumes:
+      - ./whatsapp-bot/.wwebjs_auth:/app/.wwebjs_auth
+      - ./whatsapp-bot/.wwebjs_cache:/app/.wwebjs_cache
 
   ############################################################
   #  CLOUDFLARE TUNNEL — secure public access
